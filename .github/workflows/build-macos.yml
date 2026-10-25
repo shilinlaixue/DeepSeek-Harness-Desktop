@@ -1,0 +1,30 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build .app and .dmg
+        shell: bash
+        env:
+          DSH_VERSION: '0.2.1-rc.2'
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepSeek-macOS-arm64
+          path: DeepSeek-*.dmg
+          if-no-files-found: error

@@ -6,8 +6,9 @@ using System.Windows.Media.Animation;
 namespace DeepSeekDesktop;
 
 /// <summary>
-/// 启动动画窗口（约 5 秒）：鲸鱼淡入 → 两行标题字母逐个弹入 → by Condex。
-/// 与 Mac 版动画效果一致；鲸鱼静止不跳。
+/// Startup animation: whale fades in, the two title lines type in, then the
+/// status line reports real progress. On failure it stays open and offers
+/// Retry / Quit instead of flashing a MessageBox and exiting.
 /// </summary>
 public partial class SplashWindow : Window
 {
@@ -19,6 +20,9 @@ public partial class SplashWindow : Window
     private readonly System.Windows.Threading.DispatcherTimer _letterTimer = new();
     private int _letterIndex;
 
+    public event Action? RetryRequested;
+    public event Action? QuitRequested;
+
     public SplashWindow()
     {
         InitializeComponent();
@@ -27,6 +31,23 @@ public partial class SplashWindow : Window
         BuildLetterLine(Line2Panel, Line2Text, 20, FontWeights.SemiBold, Color.FromRgb(0x40, 0x40, 0x40), _line2Blocks);
 
         Loaded += OnLoaded;
+    }
+
+    public void SetStatus(string text)
+    {
+        SubtitleText.Text = text;
+    }
+
+    public void ShowError(string message)
+    {
+        SubtitleText.Text = "启动失败：" + message;
+        SubtitleText.Foreground = new SolidColorBrush(Color.FromRgb(0xB0, 0x1E, 0x1E));
+        ErrorActions.Visibility = Visibility.Visible;
+    }
+
+    public void ShowErrorActions(bool visible)
+    {
+        ErrorActions.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void BuildLetterLine(StackPanel panel, string text, double size,
@@ -49,7 +70,6 @@ public partial class SplashWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        // 1) 鲸鱼优雅淡入（0.15s 起，0.5s）
         var whaleFade = new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.5))
         { BeginTime = TimeSpan.FromSeconds(0.15) };
         var whaleScale = new DoubleAnimation(0.92, 1.0, TimeSpan.FromSeconds(0.5))
@@ -58,34 +78,41 @@ public partial class SplashWindow : Window
         WhaleScale.BeginAnimation(ScaleTransform.ScaleXProperty, whaleScale);
         WhaleScale.BeginAnimation(ScaleTransform.ScaleYProperty, whaleScale);
 
-        // 2) 字母逐个弹入（0.3s 起，每 0.07s 一个）
-        _letterTimer.Interval = TimeSpan.FromMilliseconds(70);
+        _letterTimer.Interval = TimeSpan.FromMilliseconds(55);
         _letterTimer.Tick += (_, _) => ShowNextLetter();
         Dispatcher.BeginInvoke(() => _letterTimer.Start(), System.Windows.Threading.DispatcherPriority.Loaded,
             new object[] { });
 
-        // 3) by Condex 3.2s 浮现（总时长约 5 秒由 App 控制切换）
         var authorFade = new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.4))
-        { BeginTime = TimeSpan.FromSeconds(3.2) };
+        { BeginTime = TimeSpan.FromSeconds(2.3) };
         AuthorPanel.BeginAnimation(OpacityProperty, authorFade);
     }
 
     private void ShowNextLetter()
     {
-        // 先播第一行，第二行延迟 0.5s（约 7 个字母后）
-        var delayOffset = _letterIndex >= _line1Blocks.Count ? 7 : 0;
+        if (_letterIndex >= _line1Blocks.Count + _line2Blocks.Count)
+        {
+            _letterTimer.Stop();
+            return;
+        }
+
         var block = _letterIndex < _line1Blocks.Count
             ? _line1Blocks[_letterIndex]
             : _line2Blocks[_letterIndex - _line1Blocks.Count];
 
-        var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(200))
-        { BeginTime = TimeSpan.FromMilliseconds(delayOffset * 70) };
+        var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180));
         block.BeginAnimation(OpacityProperty, fade);
 
         _letterIndex++;
-        if (_letterIndex >= _line1Blocks.Count + _line2Blocks.Count)
-        {
-            _letterTimer.Stop();
-        }
     }
+
+    private void RetryButton_Click(object sender, RoutedEventArgs e)
+    {
+        ErrorActions.Visibility = Visibility.Collapsed;
+        SubtitleText.Foreground = new SolidColorBrush(Color.FromRgb(0x66, 0x66, 0x66));
+        SubtitleText.Text = "正在重试…";
+        RetryRequested?.Invoke();
+    }
+
+    private void QuitButton_Click(object sender, RoutedEventArgs e) => QuitRequested?.Invoke();
 }

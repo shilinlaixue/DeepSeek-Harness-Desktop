@@ -9,12 +9,20 @@
     <AssemblyName>DeepSeek</AssemblyName>
     <RootNamespace>DeepSeekDesktop</RootNamespace>
     <ApplicationIcon>assets\app.ico</ApplicationIcon>
-    <Version>1.0.2</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>1.1.0</Version>
+    <FileVersion>1.1.0.0</FileVersion>
+    <Product>DeepSeek Desktop</Product>
+    <Company>Condex</Company>
+    <Copyright>Copyright © Condex</Copyright>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <SelfContained>false</SelfContained>
+    <!-- Bundle the .NET runtime: end users must not install anything. -->
+    <SelfContained>true</SelfContained>
     <PublishReadyToRun>false</PublishReadyToRun>
-    <!-- 允许在非 Windows（如 Mac/CI）上交叉编译 Windows 目标 -->
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 
   <ItemGroup>

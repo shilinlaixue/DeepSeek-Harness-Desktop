@@ -16,20 +16,13 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install dsh bundle
-        shell: bash
-        run: |
-          rm -rf bundle
-          mkdir bundle
-          cd bundle
-          npm init -y
-          npm install @deepseek-ai/dsh@^0.1.0-rc.6
-          test -f node_modules/@deepseek-ai/dsh/lib/bin.js
-
       - name: Build app and DMG
         shell: bash
+        env:
+          DSH_VERSION: '0.2.1-rc.2'
         run: |
-          RUNTIME_NODE="$(which node)" DSH_BUNDLE_DIR="$PWD/bundle" ./build.sh
+          chmod +x build.sh
+          ./build.sh
 
       - name: Verify DMG exists
         shell: bash

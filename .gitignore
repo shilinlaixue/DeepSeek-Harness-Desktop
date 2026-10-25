@@ -1,6 +1,11 @@
 # 构建产物
 build/
+dist/
+.build/
 *.dmg
+*.zip
+*.exe
+*.sha256
 
 # macOS
 .DS_Store

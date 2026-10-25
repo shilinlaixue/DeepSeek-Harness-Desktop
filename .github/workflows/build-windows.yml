@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'windows/**'
+      - 'scripts/build-windows.ps1'
       - '.github/workflows/build-windows.yml'
       - 'DeepSeekSetup.iss'
   workflow_dispatch:
@@ -26,88 +27,27 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Publish app (win-x64)
+      - name: Build self-contained app + runtime + self-test
         shell: pwsh
-        run: |
-          cd windows
-          dotnet publish -c Release -o publish
-          if (-not (Test-Path "publish/DeepSeek.exe")) { throw "publish failed: DeepSeek.exe not found" }
-
-      - name: Download Node.js for Windows x64
-        shell: pwsh
-        run: |
-          $nodeVersion = 'v24.19.0'
-          $url = "https://nodejs.org/dist/$nodeVersion/node-$nodeVersion-win-x64.zip"
-          Invoke-WebRequest $url -OutFile node.zip
-          Expand-Archive node.zip -DestinationPath node-extract
-          if (-not (Test-Path "node-extract/node-$nodeVersion-win-x64/node.exe")) { throw "node.exe not found" }
-
-      - name: Install dsh bundle (Windows native modules)
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path bundle | Out-Null
-          Set-Location bundle
-          npm init -y
-          npm install @deepseek-ai/dsh@^0.1.0-rc.6
-          if (-not (Test-Path "node_modules/@deepseek-ai/dsh/lib/bin.js")) { throw "dsh bundle install failed" }
-
-      - name: Assemble runtime into publish
-        shell: pwsh
-        run: |
-          $nodeVersion = 'v24.19.0'
-          $publish = 'windows/publish'
-          New-Item -ItemType Directory -Force -Path "$publish/runtime" | Out-Null
-          Copy-Item "node-extract/node-$nodeVersion-win-x64/node.exe" "$publish/runtime/node.exe"
-          Copy-Item bundle "$publish/runtime/bundle" -Recurse
-          Copy-Item windows/assets/whale.png "$publish/whale.png" -Force
-          if (-not (Test-Path "$publish/runtime/bundle/node_modules/@deepseek-ai/dsh/lib/bin.js")) { throw "runtime assembly failed" }
-
-      - name: Smoke test server boot (node + dsh)
-        shell: pwsh
-        run: |
-          $env:DSH_DESKTOP_PORT = '3099'
-          $env:DSH_HOME = "$env:TEMP\dsh-smoke"
-          $proc = Start-Process -FilePath "windows/publish/runtime/node.exe" -ArgumentList @(
-            "windows/publish/runtime/bundle/node_modules/@deepseek-ai/dsh/lib/bin.js",
-            "web", "--port", "3099"
-          ) -PassThru -WindowStyle Hidden
-          try {
-            $ok = $false
-            for ($i = 0; $i -lt 30; $i++) {
-              Start-Sleep -Seconds 1
-              try {
-                $r = Invoke-WebRequest -Uri "http://127.0.0.1:3099/" -UseBasicParsing -TimeoutSec 2
-                if ($r.StatusCode -eq 200) { $ok = $true; break }
-              } catch { }
-            }
-            if (-not $ok) { throw "server did not become ready" }
-            Write-Host "SMOKE TEST PASSED: server served HTTP 200"
-          } finally {
-            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
-          }
+        run: pwsh scripts/build-windows.ps1 -Version 1.1.0
 
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup -y --no-progress
 
-      - name: Build installer (Inno Setup)
+      - name: Build installer
         shell: pwsh
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
           & $iscc DeepSeekSetup.iss
-          if (-not (Test-Path "DeepSeek-Setup-1.0.2.exe")) { throw "installer build failed" }
-
-      - name: Zip distribution
-        shell: pwsh
-        run: |
-          Compress-Archive -Path windows/publish/* -DestinationPath DeepSeek-Windows.zip -Force
-          Get-Item DeepSeek-Windows.zip, DeepSeek-Setup-1.0.2.exe | Select-Object Name, Length
+          if (-not (Test-Path "dist/DeepSeek-Setup-1.1.0.exe")) { throw "installer build failed" }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: DeepSeek-Windows
           path: |
-            DeepSeek-Windows.zip
-            DeepSeek-Setup-1.0.2.exe
+            dist/DeepSeek-1.1.0-win-x64.zip
+            dist/DeepSeek-1.1.0-win-x64.zip.sha256
+            dist/DeepSeek-Setup-1.1.0.exe

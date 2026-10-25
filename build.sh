@@ -1,30 +1,56 @@
 #!/bin/bash
 # ============================================================
-# DeepSeek Desktop — 构建 .app → 签名 → .dmg
-# 用法: ./build.sh [--install]      --install 额外装到 /Applications
+# DeepSeek Desktop — macOS build (.app -> ad-hoc sign -> .dmg)
+# 用法: ./build.sh [--install]
 #
-# 可覆盖变量：
-#   RUNTIME_NODE      Node 可执行文件路径（默认本机 nvm node v24）
-#   DSH_BUNDLE_DIR    dsh 安装目录（含 node_modules 的 npx 目录）
+# 构建机要求：Xcode Command Line Tools + Node.js/npm。
+# 运行时会复制构建机的 node，并把固定版本 dsh 安装到 .build/bundle。
+#
+# 可覆盖：
+#   RUNTIME_NODE     指定 node 可执行文件
+#   DSH_BUNDLE_DIR   指定已安装 dsh 的 bundle 目录（含 node_modules）
+#   DSH_VERSION      dsh 版本，默认 0.2.1-rc.2
 # ============================================================
 set -euo pipefail
 cd "$(dirname "$0")"
 
 APP_NAME="DeepSeek"
 EXEC_NAME="DeepSeek"
-VERSION="1.0.1"
+VERSION="1.1.0"
 BUNDLE_ID="com.deepseek.desktop"
-TARGET="arm64-apple-macosx15.0"
+DSH_VERSION="${DSH_VERSION:-0.2.1-rc.2}"
 
-RUNTIME_NODE="${RUNTIME_NODE:-/Users/xiexin/.nvm/versions/node/v24.19.0/bin/node}"
-DSH_BUNDLE_DIR="${DSH_BUNDLE_DIR:-/Users/xiexin/.npm/_npx/1e7f6d9597241db0}"
+if [ "$(uname -m)" = "arm64" ]; then
+    ARCH="arm64"
+    TARGET="arm64-apple-macosx13.0"
+else
+    ARCH="x86_64"
+    TARGET="x86_64-apple-macosx13.0"
+fi
+
+RUNTIME_NODE="${RUNTIME_NODE:-$(command -v node || true)}"
+DSH_BUNDLE_DIR="${DSH_BUNDLE_DIR:-$PWD/.build/bundle}"
 
 BUILD_DIR="build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
-DMG_NAME="$APP_NAME-$VERSION.dmg"
+DMG_NAME="$APP_NAME-$VERSION-$ARCH.dmg"
+
+if [ -z "$RUNTIME_NODE" ] || [ ! -x "$RUNTIME_NODE" ]; then
+    echo "错误：找不到 node。请先安装 Node.js，或设置 RUNTIME_NODE=/path/to/node" >&2
+    exit 1
+fi
 
 DO_INSTALL=0
 for arg in "$@"; do [ "$arg" = "--install" ] && DO_INSTALL=1; done
+
+if [ ! -f "$DSH_BUNDLE_DIR/node_modules/@deepseek-ai/dsh/lib/bin.js" ]; then
+    echo "==> 安装 dsh@$DSH_VERSION 到 $DSH_BUNDLE_DIR"
+    mkdir -p "$DSH_BUNDLE_DIR"
+    if [ ! -f "$DSH_BUNDLE_DIR/package.json" ]; then
+        (cd "$DSH_BUNDLE_DIR" && npm init -y >/dev/null)
+    fi
+    (cd "$DSH_BUNDLE_DIR" && npm install --omit=dev --no-audit --no-fund "@deepseek-ai/dsh@$DSH_VERSION")
+fi
 
 echo "==> 清理旧产物"
 rm -rf "$BUILD_DIR" "$DMG_NAME"
@@ -66,13 +92,14 @@ if [ -f Resources/whale.png ]; then
     cp Resources/whale.png "$APP_BUNDLE/Contents/Resources/whale.png"
 fi
 
-echo "==> 捆绑 Node 运行时 + dsh 包（约 460MB，首次稍慢）"
+echo "==> 捆绑 Node 运行时 + dsh 包（约 400MB，首次稍慢）"
 mkdir -p "$APP_BUNDLE/Contents/Resources/runtime"
 cp "$RUNTIME_NODE" "$APP_BUNDLE/Contents/Resources/runtime/node"
+chmod +x "$APP_BUNDLE/Contents/Resources/runtime/node"
 mkdir -p "$APP_BUNDLE/Contents/Resources/runtime/bundle"
 cp -R "$DSH_BUNDLE_DIR/node_modules" "$APP_BUNDLE/Contents/Resources/runtime/bundle/"
-cp "$DSH_BUNDLE_DIR/package.json" "$DSH_BUNDLE_DIR/package-lock.json" \
-   "$APP_BUNDLE/Contents/Resources/runtime/bundle/" 2>/dev/null || true
+cp "$DSH_BUNDLE_DIR/package.json" "$APP_BUNDLE/Contents/Resources/runtime/bundle/" 2>/dev/null || true
+cp "$DSH_BUNDLE_DIR/package-lock.json" "$APP_BUNDLE/Contents/Resources/runtime/bundle/" 2>/dev/null || true
 
 echo "==> 本地签名 (ad-hoc)"
 codesign --force --deep --sign - "$APP_BUNDLE"

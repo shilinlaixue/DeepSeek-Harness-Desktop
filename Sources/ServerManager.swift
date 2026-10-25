@@ -1,38 +1,41 @@
 import Foundation
 import Combine
 
-/// 管理 DeepSeek Harness 本地 Web 服务器：
-/// 1) 若目标端口已有服务在跑（例如用户已手动启动过 dsh web）→ 直接连接；
-/// 2) 否则用 App 内置的 Node 运行时 + dsh 包拉起一个服务器，等待就绪。
+/// 管理 DeepSeek Harness 本地 Web 服务器。
+///
+/// 新版 `dsh web` 会为每次进程生成一次性启动令牌，并把唯一可用地址打印为
+/// `dsh web: http://127.0.0.1:PORT/?token=...`。直接打开裸端口会得到 401，
+/// 这正是旧版桌面端白屏的根因；这里从日志中捕获完整 URL 后再交给 WKWebView。
 @MainActor
 final class ServerManager: ObservableObject {
     static let shared = ServerManager()
 
     enum ServerState: Equatable {
         case starting
-        case ready(port: Int)
+        case ready(URL)
         case failed(String)
     }
 
     @Published var state: ServerState = .starting
+    @Published private(set) var url: URL?
 
     private var serverProcess: Process?
     private var logURL: URL?
+    private(set) var port: Int?
 
     private init() {}
 
     // MARK: - 配置
 
-    /// 目标端口：环境变量 DSH_DESKTOP_PORT 优先，默认 3080（与 dsh web 默认一致）
-    var preferredPort: Int {
+    /// 固定端口仅作为可选覆盖；默认 0 让系统选空闲端口，避免与用户自己的 dsh 冲突。
+    private var requestedPort: Int {
         let env = ProcessInfo.processInfo.environment
         if let raw = env["DSH_DESKTOP_PORT"], let p = Int(raw), p >= 0, p <= 65535 {
             return p
         }
-        return 3080
+        return 0
     }
 
-    /// 数据目录覆盖（默认不设置 → 使用用户真实 ~/.dsh，与命令行一致）
     private var homeOverride: String? {
         let env = ProcessInfo.processInfo.environment
         let v = env["DSH_DESKTOP_HOME"] ?? ""
@@ -43,118 +46,167 @@ final class ServerManager: ObservableObject {
 
     func ensureServer() async {
         state = .starting
-        let port = preferredPort
-
-        if await isServing(port: port) {
-            state = .ready(port: port)
-            return
-        }
+        url = nil
+        shutdown()
 
         do {
-            try spawn(port: port)
-            if await waitUntilServing(port: port, timeout: 25) {
-                state = .ready(port: port)
-            } else {
-                state = .failed("服务器启动超时。日志：\(logURL?.path ?? "无")")
-            }
+            let endpoint = try await startServer()
+            url = endpoint
+            port = endpoint.port
+            state = .ready(endpoint)
         } catch {
-            state = .failed("启动失败：\(error.localizedDescription)")
+            state = .failed(error.localizedDescription)
         }
     }
 
-    // MARK: - 探测
-
-    private func isServing(port: Int) async -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:\(port)/") else { return false }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 2
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-                return true
-            }
-            return false
-        } catch {
-            return false
-        }
-    }
-
-    // MARK: - 启动
-
-    private func runtimeRoot() throws -> URL {
-        guard let res = Bundle.main.resourceURL else {
-            throw ServerError.noResources
-        }
-        let runtime = res.appendingPathComponent("runtime", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: runtime.path) else {
+    private func startServer() async throws -> URL {
+        let runtime = try runtimeRoot()
+        let node = runtime.appendingPathComponent("node")
+        let bin = runtime.appendingPathComponent("bundle/node_modules/@deepseek-ai/dsh/lib/bin.js")
+        guard FileManager.default.isExecutableFile(atPath: node.path),
+              FileManager.default.fileExists(atPath: bin.path) else {
             throw ServerError.noRuntime
         }
+
+        let workspace = try ensureWorkspace()
+        let logFile = try prepareLog()
+
+        let p = Process()
+        p.executableURL = node
+        p.arguments = ["web", "--host", "127.0.0.1", "--port", String(requestedPort), "--no-open"]
+        p.currentDirectoryURL = workspace
+
+        var env = ProcessInfo.processInfo.environment
+        env["DSH_DESKTOP"] = "1"
+        if let home = homeOverride { env["DSH_HOME"] = home }
+        p.environment = env
+
+        let handle = try FileHandle(forWritingTo: logFile)
+        p.standardOutput = handle
+        p.standardError = handle
+
+        do {
+            try p.run()
+        } catch {
+            try? handle.close()
+            throw ServerError.spawn(error.localizedDescription)
+        }
+        // 子进程持有自己的句柄；父进程关掉，避免日志文件长期被占用。
+        try? handle.close()
+        serverProcess = p
+
+        let deadline = Date().addingTimeInterval(45)
+        while Date() < deadline {
+            if !p.isRunning {
+                throw ServerError.exited(p.terminationStatus, logFile.path)
+            }
+            if let endpoint = parseEndpoint(from: logFile) {
+                try await verify(endpoint)
+                return endpoint
+            }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        throw ServerError.timedOut(logFile.path)
+    }
+
+    /// 与 App/CLI 共用 `~/Documents/deepseek-harness/default-workspace`：
+    /// dsh 自己会创建它，作为 cwd 也能保证沙箱根目录可写。
+    private func ensureWorkspace() throws -> URL {
+        if let custom = ProcessInfo.processInfo.environment["DSH_DESKTOP_WORKSPACE"],
+           !custom.isEmpty {
+            let url = URL(fileURLWithPath: custom, isDirectory: true)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            throw ServerError.noWorkspace
+        }
+        let workspace = documents
+            .appendingPathComponent("deepseek-harness", isDirectory: true)
+            .appendingPathComponent("default-workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        return workspace
+    }
+
+    private func prepareLog() throws -> URL {
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                        in: .userDomainMask).first else {
+            throw ServerError.noResources
+        }
+        let dir = appSupport.appendingPathComponent("DeepSeek", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let log = dir.appendingPathComponent("server.log")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        // 单文件超过 ~1.5MB 时轮转，避免无限增长。
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: log.path),
+           let size = attributes[.size] as? NSNumber,
+           size.intValue > 1_500_000 {
+            let old = dir.appendingPathComponent("server.log.1")
+            try? FileManager.default.removeItem(at: old)
+            try? FileManager.default.moveItem(at: log, to: old)
+            FileManager.default.createFile(atPath: log.path, contents: nil)
+        }
+        logURL = log
+        return log
+    }
+
+    private func parseEndpoint(from logFile: URL) -> URL? {
+        guard let text = try? String(contentsOf: logFile, encoding: .utf8) else { return nil }
+        // 只需要第一处完整地址；token 是单行内的非空白字符。
+        guard let range = text.range(of: #"dsh web:\s+(https?://\S+)"#, options: .regularExpression) else {
+            return nil
+        }
+        let line = String(text[range])
+        guard let urlStart = line.range(of: "http") else { return nil }
+        return URL(string: String(line[urlStart.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func verify(_ endpoint: URL) async throws {
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = 3
+        for _ in 0..<30 {
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                if let http = response as? HTTPURLResponse, http.statusCode == 200,
+                   let html = String(data: data, encoding: .utf8),
+                   html.localizedCaseInsensitiveContains("DeepSeek") {
+                    return
+                }
+            } catch {
+                // 服务刚绑定端口时可能还没开始 accept，稍后重试。
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        throw ServerError.notServing(endpoint.absoluteString)
+    }
+
+    private func runtimeRoot() throws -> URL {
+        guard let res = Bundle.main.resourceURL else { throw ServerError.noResources }
+        let runtime = res.appendingPathComponent("runtime", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: runtime.path) else { throw ServerError.noRuntime }
         return runtime
     }
 
     enum ServerError: LocalizedError {
         case noResources
         case noRuntime
+        case noWorkspace
+        case spawn(String)
+        case exited(Int32, String)
+        case timedOut(String)
+        case notServing(String)
 
         var errorDescription: String? {
             switch self {
             case .noResources: return "应用资源缺失"
             case .noRuntime: return "内置运行时缺失（runtime/ 未找到）"
+            case .noWorkspace: return "无法创建默认工作区"
+            case .spawn(let detail): return "无法启动内置 Node：\(detail)"
+            case .exited(let code, let log): return "dsh 进程提前退出（\(code)）。日志：\(log)"
+            case .timedOut(let log): return "服务器启动超时。日志：\(log)"
+            case .notServing(let url): return "本地服务未就绪：\(url)"
             }
         }
-    }
-
-    private func spawn(port: Int) throws {
-        let runtime = try runtimeRoot()
-        let node = runtime.appendingPathComponent("node")
-        let bin = runtime.appendingPathComponent("bundle/node_modules/@deepseek-ai/dsh/lib/bin.js")
-
-        guard FileManager.default.isExecutableFile(atPath: node.path) else {
-            throw ServerError.noRuntime
-        }
-
-        let p = Process()
-        p.executableURL = node
-        p.arguments = [bin.path, "web", "--port", String(port)]
-        p.currentDirectoryURL = runtime.appendingPathComponent("bundle")
-
-        var env = ProcessInfo.processInfo.environment
-        env["DSH_DESKTOP"] = "1"
-        if let home = homeOverride {
-            env["DSH_HOME"] = home
-        }
-        p.environment = env
-
-        // 日志写进 ~/Library/Application Support/DeepSeek/server.log
-        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            throw ServerError.noResources
-        }
-        let logDir = appSupport.appendingPathComponent("DeepSeek", isDirectory: true)
-        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
-        let logFile = logDir.appendingPathComponent("server.log")
-        logURL = logFile
-        FileManager.default.createFile(atPath: logFile.path, contents: nil)
-        if let fh = FileHandle(forWritingAtPath: logFile.path) {
-            fh.seekToEndOfFile()
-            p.standardOutput = fh
-            p.standardError = fh
-        }
-
-        try p.run()
-        serverProcess = p
-    }
-
-    private func waitUntilServing(port: Int, timeout: TimeInterval) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if await isServing(port: port) { return true }
-            // 进程提前退出（启动失败），不再空等
-            if let p = serverProcess, !p.isRunning {
-                return await isServing(port: port)
-            }
-            try? await Task.sleep(nanoseconds: 500_000_000)
-        }
-        return await isServing(port: port)
     }
 
     // MARK: - 进程树清理
@@ -176,13 +228,11 @@ final class ServerManager: ObservableObject {
         kill(pid, 0) == 0
     }
 
-    /// 递归向整棵树发 SIGTERM
     private func termTree(_ pid: Int32) {
         for child in children(of: pid) { termTree(child) }
         kill(pid, SIGTERM)
     }
 
-    /// 递归向整棵树发 SIGKILL（兜底）
     private func killTree(_ pid: Int32) {
         for child in children(of: pid) { killTree(child) }
         kill(pid, SIGKILL)
@@ -193,8 +243,7 @@ final class ServerManager: ObservableObject {
         return children(of: pid).contains { processAlive($0) }
     }
 
-    /// 由本 App 拉起的服务器退出时调用；外部已存在的服务器不受影响。
-    /// 同步等待整棵进程树退出（SIGTERM → 3 秒 → SIGKILL），避免残留孤儿进程。
+    /// 只清理本 App 拉起的服务器；用户自己启动的 `dsh web` 不受影响。
     func shutdown() {
         guard let p = serverProcess else { return }
         let root = p.processIdentifier
@@ -205,5 +254,7 @@ final class ServerManager: ObservableObject {
         }
         killTree(root)
         serverProcess = nil
+        port = nil
+        url = nil
     }
 }

@@ -235,14 +235,15 @@ struct ContentView: View {
         Group {
             switch server.state {
             case .starting, .ready:
-                // 服务器启动期间就创建 WebView 预加载（带自动重试），
-                // 服务器就绪后页面已加载完成，淡入即用。
-                WebView(
-                    url: URL(string: "http://127.0.0.1:\(server.preferredPort)")!,
-                    reloadToken: reloadToken
-                )
-                .onReceive(NotificationCenter.default.publisher(for: .dshReload)) { _ in
-                    reloadToken += 1
+                // 必须使用 dsh 打印的带 token 地址；裸端口会返回 401。
+                if let url = server.url {
+                    WebView(url: url, reloadToken: reloadToken)
+                        .onReceive(NotificationCenter.default.publisher(for: .dshReload)) { _ in
+                            reloadToken += 1
+                        }
+                } else {
+                    ProgressView("正在启动本地服务…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             case .failed(let message):
                 VStack(spacing: 12) {

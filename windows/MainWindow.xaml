@@ -3,11 +3,47 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="DeepSeek"
-        Width="1200" Height="800"
-        MinWidth="1000" MinHeight="640"
+        Width="1280" Height="840"
+        MinWidth="980" MinHeight="620"
         WindowStartupLocation="CenterScreen"
-        Background="White">
+        Background="#FFF7F7F8">
     <Grid>
         <wv2:WebView2 x:Name="WebView"/>
+
+        <!-- 加载失败 / 本地服务退出时的可恢复界面，不再白屏 -->
+        <Border x:Name="ErrorPanel"
+                Visibility="Collapsed"
+                Background="#FFF7F7F8">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="620" Margin="32">
+                <TextBlock Text="无法加载 DeepSeek"
+                           FontSize="26" FontWeight="SemiBold"
+                           HorizontalAlignment="Center" Foreground="#FF1F2328"/>
+                <TextBlock x:Name="ErrorText"
+                           Margin="0,14,0,0"
+                           FontSize="14" LineHeight="22"
+                           TextWrapping="Wrap" TextAlignment="Center"
+                           Foreground="#FF57606A"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,26,0,0">
+                    <Button x:Name="RetryButton" Content="重试"
+                            Width="112" Height="36" Margin="0,0,12,0"
+                            IsDefault="True" Click="RetryButton_Click"/>
+                    <Button x:Name="LogButton" Content="打开日志"
+                            Width="112" Height="36" Margin="0,0,12,0"
+                            Click="LogButton_Click"/>
+                    <Button x:Name="RestartButton" Content="重启应用"
+                            Width="112" Height="36"
+                            Click="RestartButton_Click"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- 首屏加载提示（WebView 初始化期间） -->
+        <Border x:Name="LoadingPanel" Background="#FFF7F7F8">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock Text="DeepSeek" FontSize="30" FontWeight="Bold" HorizontalAlignment="Center"/>
+                <TextBlock Text="正在载入工作台…" Margin="0,10,0,0"
+                           FontSize="14" Foreground="#FF57606A" HorizontalAlignment="Center"/>
+            </StackPanel>
+        </Border>
     </Grid>
 </Window>

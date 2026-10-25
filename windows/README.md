@@ -1,46 +1,59 @@
-# DeepSeek Desktop — Windows 版
+# DeepSeek Desktop — Windows
 
-Windows 版桌面应用：C# WPF + WebView2 承载 DeepSeek Harness Web UI，效果与 macOS 版一致。
+C# WPF + WebView2 原生窗口，内置 Node.js + `dsh`，双击即用。与命令行 `dsh` 共用
+`%USERPROFILE%\.dsh` 和默认工作区。
 
-## ✨ 特性
+## 1.1.0 修复
 
-- **原生窗口**：WPF + Microsoft Edge WebView2，无需浏览器
-- **内置运行时**：自带 Node.js（Windows x64）与 `dsh` 包，自动启动本地服务
-- **启动动画**：鲸鱼 logo + "DeepSeek Harness / for Windows" + by Condex（约 5 秒）
-- **智能服务生命周期**：复用已在运行的服务器（默认端口 3080），退出时清理自己拉起的进程
-- **防篡改**：macOS 版启动时校验关键文件哈希；Windows 版暂未实现
+- 捕获 `dsh web` 打印的带 `?token=` 地址；打开裸端口会导致 401/白屏，已修复。
+- 默认 `--port 0`，不再和 3080 上的其他进程冲突。
+- cwd 改为 `Documents\deepseek-harness\default-workspace`，避免安装目录只读导致沙箱报错。
+- WebView2 缓存改到 `%LOCALAPPDATA%\DeepSeek\WebView2`，修复 Program Files 下拒绝访问。
+- 单实例、失败可重试、加载失败错误页、日志入口。
+- stdout 通过文件捕获（GUI 无控制台也能稳定启动）。
+- Job Object 保证退出/崩溃后清理 `node.exe`。
+- 自包含 .NET 8 发布，用户无需安装 .NET。
 
-## 📦 分发形式
-
-| 文件 | 说明 |
-|------|------|
-| `DeepSeek-Setup-1.0.2.exe` | Inno Setup 安装向导（装到 Program Files、桌面/开始菜单快捷方式、卸载程序） |
-| `DeepSeek-Windows.zip` | 绿色版，解压即用 |
-
-## 🔧 开发 / 构建
-
-### GitHub Actions（推荐，自动构建）
-
-- 推送 `windows/**` 改动 → `build-windows.yml` 自动构建（编译 + 下载 Node + `npm install` dsh + 冒烟测试 + 打包）
-- 推送 `mac-v*` / `win-v*` 标签 → `release-windows.yml` 自动发布 Windows GitHub Release
-
-### 本地构建
+## 构建
 
 ```powershell
-cd windows
-dotnet publish -c Release          # 需要 .NET 8 SDK
+# 在仓库根目录，需要 .NET 8 SDK
+pwsh scripts/build-windows.ps1
 ```
 
-> 在非 Windows 环境交叉编译时，csproj 已开启 `EnableWindowsTargeting`。
+产物：`dist/DeepSeek-1.1.0-win-x64.zip`（自包含，解压双击 `DeepSeek.exe`）。
 
-### 手动组装运行时（CI 已自动化，仅供参考）
+手动：
 
-1. 下载 Node.js Windows x64 的 `node.exe`
-2. `npm install @deepseek-ai/dsh` 到 `runtime/bundle/`（Windows 上会安装 win 版原生模块）
-3. 目录结构：`runtime/node.exe` + `runtime/bundle/node_modules/...`
+```powershell
+dotnet publish windows -c Release -o .build/publish
+# 再把 node.exe + dsh bundle 放到 .build/publish/runtime/
+```
 
-## ⚠️ 注意事项
+## 自检
 
-- 需要 **Microsoft Edge WebView2 Runtime**（Windows 10/11 一般已预装；缺失时应用会提示）
-- 数据目录：`%USERPROFILE%\.dsh`（与命令行 `dsh` 互通）
-- 端口默认 3080，环境变量 `DSH_DESKTOP_PORT` 可修改
+```powershell
+$env:DSH_DESKTOP_DATA="$env:TEMP\dsh-selftest"
+$env:DSH_DESKTOP_SELFTEST_OUT="$env:TEMP\dsh-selftest.txt"
+$env:DSH_DESKTOP_PORT="0"
+.\DeepSeek.exe --self-test
+Get-Content "$env:TEMP\dsh-selftest.txt"
+```
+
+真实启动内置 Node + dsh，解析 token URL，HTTP 校验后退出，CI 用它做冒烟测试。
+
+## 环境变量
+
+| 变量 | 用途 |
+|------|------|
+| `DSH_DESKTOP_PORT` | 固定端口，默认 0（系统分配） |
+| `DSH_DESKTOP_WORKSPACE` | 覆盖工作区 |
+| `DSH_DESKTOP_HOME` | 覆盖 `DSH_HOME`（测试/便携） |
+| `DSH_DESKTOP_DATA` | 覆盖日志与 WebView2 缓存目录 |
+| `DSH_DESKTOP_URL` | 直接使用已有的带 token 地址 |
+
+## 已知限制
+
+- 需要 WebView2 Runtime（Windows 10/11 一般已内置）；缺失时应用会明确提示。
+- 全新 `~/.dsh` 首次需要完成一次登录；已有 CLI 数据的用户直接复用。
+- 安装包未做商业代码签名，SmartScreen 可能提示未知发布者。

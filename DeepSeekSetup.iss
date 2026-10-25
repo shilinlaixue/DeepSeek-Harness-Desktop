@@ -1,6 +1,6 @@
 ; DeepSeek for Windows 安装脚本（Inno Setup 6）
 #define MyAppName "DeepSeek"
-#define MyAppVersion "1.0.2"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "Condex"
 
 [Setup]
@@ -11,7 +11,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 OutputBaseFilename=DeepSeek-Setup-{#MyAppVersion}
-OutputDir=.
+OutputDir=dist
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -22,7 +22,7 @@ PrivilegesRequired=admin
 DisableProgramGroupPage=yes
 
 [Files]
-Source: "windows\publish\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: ".build\publish\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\DeepSeek.exe"
