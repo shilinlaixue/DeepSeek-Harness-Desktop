@@ -1,0 +1,41 @@
+name: Verify macOS DMG
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download DMG from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download mac-v1.1.0 \
+            --repo "${{ github.repository }}" \
+            --pattern 'DeepSeek-*.dmg' \
+            --dir .
+
+      - name: Mount and verify bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          DMG="$(ls DeepSeek-*.dmg | head -n1)"
+          rm -rf /tmp/dsh-dmg
+          mkdir -p /tmp/dsh-dmg
+          hdiutil attach "$DMG" -mountpoint /tmp/dsh-dmg -nobrowse -readonly
+          trap 'hdiutil detach /tmp/dsh-dmg -force || true' EXIT
+
+          APP="/tmp/dsh-dmg/DeepSeek.app"
+          test -x "$APP/Contents/MacOS/DeepSeek"
+          test -f "$APP/Contents/Resources/runtime/node"
+          test -f "$APP/Contents/Resources/runtime/bundle/node_modules/@deepseek-ai/dsh/lib/bin.js"
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+          echo "CFBundleShortVersionString=$VERSION"
+          test "$VERSION" = "1.1.0"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          echo "VERIFY OK"
